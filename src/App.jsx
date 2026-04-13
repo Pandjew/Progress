@@ -30,7 +30,7 @@ const getWeekNum = (d) => {
 };
 
 function formatSessionText(w) {
-  let t = `📝 **SÉANCE — ${fmtD(w.date)} (S${w.week})**\n\n`;
+  let t = `📝 **SÉANCE — ${fmtD(w.date)}${w.week ? ` (S${w.week})` : ""}**\n\n`;
   t += `**Type :** ${w.sessionType} | **Discipline :** ${w.discipline}\n`;
   if (w.duration) t += `**Durée :** ${w.duration}\n`;
   if (w.distance) t += `**Distance :** ${w.distance} km\n`;
@@ -89,6 +89,17 @@ function Inp({ label, ...p }) {
       padding: "9px 12px", borderRadius: 8, border: `1px solid ${C.border}`,
       background: C.bg, color: C.text, fontSize: 13, fontFamily: font, outline: "none",
       transition: "border .15s", width: "100%", boxSizing: "border-box", ...p.style,
+    }} onFocus={e => e.target.style.borderColor = C.accent} onBlur={e => e.target.style.borderColor = C.border} />
+  </div>;
+}
+
+function Txta({ label, ...p }) {
+  return <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+    {label && <label style={{ fontSize: 12, color: C.textDim, fontWeight: 600 }}>{label}</label>}
+    <textarea {...p} rows={p.rows || 3} style={{
+      padding: "9px 12px", borderRadius: 8, border: `1px solid ${C.border}`,
+      background: C.bg, color: C.text, fontSize: 13, fontFamily: font, outline: "none",
+      transition: "border .15s", width: "100%", boxSizing: "border-box", resize: "vertical", ...p.style,
     }} onFocus={e => e.target.style.borderColor = C.accent} onBlur={e => e.target.style.borderColor = C.border} />
   </div>;
 }
@@ -188,6 +199,7 @@ export default function App() {
   const flash = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2200); };
   const add = async (col, setter, data, item) => { const n = [item, ...data]; setter(n); await save(col, n); };
   const del = async (col, setter, data, id) => { const n = data.filter(x => x.id !== id); setter(n); await save(col, n); };
+  const update = async (col, setter, data, item) => { const n = data.map(x => x.id === item.id ? item : x); setter(n); await save(col, n); };
 
   const shoeKm = useMemo(() => {
     const map = {};
@@ -232,6 +244,7 @@ export default function App() {
         .tp-badge-row > span { font-size: 10px !important; padding: 1px 6px !important; }
         .tp-history-item { flex-direction: column !important; align-items: flex-start !important; gap: 6px !important; }
         .tp-history-badges { width: 100%; justify-content: flex-start !important; }
+        input[type="date"] { min-width: 0 !important; max-width: 100% !important; }
       }
       @media (min-width: 701px) {
         .tp-nav-bottom { display: none !important; }
@@ -279,7 +292,8 @@ export default function App() {
       {tab === "dashboard" && <DashboardView workouts={workouts} nutrition={nutrition} body={body} shoes={shoes} shoeKm={shoeKm} />}
       {tab === "workout" && <WorkoutView workouts={workouts} shoes={shoes}
         onAdd={w => { add(COLLECTIONS.workouts, setWorkouts, workouts, w); flash("Séance enregistrée ✓"); }}
-        onDel={id => { del(COLLECTIONS.workouts, setWorkouts, workouts, id); flash("Supprimée"); }} />}
+        onDel={id => { del(COLLECTIONS.workouts, setWorkouts, workouts, id); flash("Supprimée"); }}
+        onUpdate={w => { update(COLLECTIONS.workouts, setWorkouts, workouts, w); flash("Séance modifiée ✓"); }} />}
       {tab === "nutrition" && <NutritionView nutrition={nutrition}
         onAdd={n => { add(COLLECTIONS.nutrition, setNutrition, nutrition, n); flash("Nutrition enregistrée ✓"); }}
         onDel={id => { del(COLLECTIONS.nutrition, setNutrition, nutrition, id); flash("Supprimée"); }} />}
@@ -396,24 +410,46 @@ function DashboardView({ workouts, nutrition, body, shoes, shoeKm }) {
 // ═══════════════════════════════════════════════════════════════
 // WORKOUT FORM — all columns from 📝 Journal Séances
 // ═══════════════════════════════════════════════════════════════
-function WorkoutView({ workouts, shoes, onAdd, onDel }) {
-  const [f, setF] = useState({
+function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
+  const emptyForm = {
     date: today(), week: "", sessionType: "", discipline: "Course",
     duration: "", distance: "", fcMoy: "", fcMax: "", allure: "",
     ressenti: 5, fatigue: 3, quality: 7, meteo: "", shoeId: "",
     exercises: "", comments: "",
-  });
+  };
+  const [f, setF] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+  const formRef = useRef(null);
 
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   const isRun = f.discipline === "Course";
 
   const handleSave = () => {
     if (!f.sessionType) return;
-    const week = f.week || getWeekNum(f.date);
-    onAdd({ id: Date.now().toString(), ...f, week, distance: f.distance ? parseFloat(f.distance) : null });
-    setF(p => ({ ...p, sessionType: "", duration: "", distance: "", fcMoy: "", fcMax: "", allure: "", exercises: "", comments: "", ressenti: 5, fatigue: 3, quality: 7 }));
+    if (editingId) {
+      onUpdate({ ...f, id: editingId, distance: f.distance ? parseFloat(f.distance) : null });
+      setEditingId(null);
+    } else {
+      onAdd({ id: Date.now().toString(), ...f, distance: f.distance ? parseFloat(f.distance) : null });
+    }
+    setF(emptyForm);
   };
+
+  const handleEdit = (w) => {
+    setF({
+      date: w.date || today(), week: w.week || "", sessionType: w.sessionType || "",
+      discipline: w.discipline || "Course", duration: w.duration || "",
+      distance: w.distance ? String(w.distance) : "", fcMoy: w.fcMoy || "", fcMax: w.fcMax || "",
+      allure: w.allure || "", ressenti: w.ressenti || 5, fatigue: w.fatigue || 3,
+      quality: w.quality || 7, meteo: w.meteo || "", shoeId: w.shoeId || "",
+      exercises: w.exercises || "", comments: w.comments || "",
+    });
+    setEditingId(w.id);
+    formRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const handleCancel = () => { setEditingId(null); setF(emptyForm); };
 
   const handleCopySession = async (w) => {
     await copyText(formatSessionText(w));
@@ -422,10 +458,15 @@ function WorkoutView({ workouts, shoes, onAdd, onDel }) {
   };
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-    <Card title="📝 Nouvelle séance" sub="Colonnes identiques au Journal Séances Excel : Semaine, Date, Type, Discipline, Durée, Distance, FC moy, FC max, Allure, Ressenti, Fatigue, Qualité, Météo, Exercices, Commentaires">
+    <Card title={editingId ? "✏️ Modifier la séance" : "📝 Nouvelle séance"} sub="Semaine, Date, Type, Discipline, Durée, Distance, FC moy, FC max, Allure, Ressenti, Fatigue, Qualité, Météo, Exercices, Commentaires">
+      <div ref={formRef} />
+      {editingId && <div style={{ marginBottom: 12, padding: "8px 12px", background: C.accent + "1a", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 13, color: C.accent, fontWeight: 600 }}>Mode édition</span>
+        <Btn v="ghost" onClick={handleCancel} style={{ padding: "4px 12px", fontSize: 12 }}>Annuler</Btn>
+      </div>}
       <Grid cols={4} gap={12} style={{ marginBottom: 14 }} mobileCols={2}>
         <Inp label="Date" type="date" value={f.date} onChange={e => set("date", e.target.value)} />
-        <Inp label="Semaine" type="number" placeholder={`Auto (S${getWeekNum(f.date)})`} value={f.week} onChange={e => set("week", e.target.value)} />
+        <Inp label="Semaine" type="number" placeholder="N° semaine" value={f.week} onChange={e => set("week", e.target.value)} />
         <Sel label="Type de séance" options={SESSION_TYPES} value={f.sessionType} onChange={e => set("sessionType", e.target.value)} />
         <Sel label="Discipline" options={DISCIPLINES} value={f.discipline} onChange={e => set("discipline", e.target.value)} />
       </Grid>
@@ -446,20 +487,23 @@ function WorkoutView({ workouts, shoes, onAdd, onDel }) {
         {isRun && <Sel label="Chaussures" options={shoes.map(s => s.name)} value={shoes.find(s => s.id === f.shoeId)?.name || ""} onChange={e => { const sh = shoes.find(s => s.name === e.target.value); set("shoeId", sh?.id || ""); }} />}
       </Grid>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 14 }}>
-        <Inp label="Exercices / Détails" value={f.exercises} onChange={e => set("exercises", e.target.value)} placeholder="Pompes 4×15 + Pike 3×10 + Dips 4×10 + Gainage 3×1min + …" />
-        <Inp label="Commentaires" value={f.comments} onChange={e => set("comments", e.target.value)} placeholder="Sensations, notes, progressions, alertes…" />
+        <Txta label="Exercices / Détails" value={f.exercises} onChange={e => set("exercises", e.target.value)} placeholder="Pompes 4×15&#10;Pike 3×10&#10;Dips 4×10&#10;Gainage 3×1min" rows={4} />
+        <Txta label="Commentaires" value={f.comments} onChange={e => set("comments", e.target.value)} placeholder="Sensations, notes, progressions, alertes…" rows={3} />
       </div>
-      <Btn onClick={handleSave} disabled={!f.sessionType}>Enregistrer la séance</Btn>
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn onClick={handleSave} disabled={!f.sessionType}>{editingId ? "💾 Sauvegarder les modifications" : "Enregistrer la séance"}</Btn>
+        {editingId && <Btn v="ghost" onClick={handleCancel}>Annuler</Btn>}
+      </div>
     </Card>
 
     <Card title="Historique" sub={`${workouts.length} séances enregistrées`}>
       {workouts.length === 0 ? <div style={{ color: C.textMuted, textAlign: "center", padding: 24 }}>Aucune séance</div>
         : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {workouts.slice(0, 30).map(w => <div key={w.id} className="tp-history-item" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: C.bg, borderRadius: 8, gap: 8 }}>
+          {workouts.slice(0, 30).map(w => <div key={w.id} className="tp-history-item" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: editingId === w.id ? C.accent + "11" : C.bg, borderRadius: 8, gap: 8, border: editingId === w.id ? `1px solid ${C.accent}44` : "1px solid transparent" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
               <span>{w.discipline === "Course" ? "🏃" : w.discipline === "Renfo" ? "💪" : "🧘"}</span>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>S{w.week} — {w.sessionType}</div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{w.week ? `S${w.week} — ` : ""}{w.sessionType}</div>
                 <div style={{ fontSize: 11, color: C.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fmtD(w.date)}{w.meteo ? ` • ${w.meteo}` : ""}{w.exercises ? ` • ${w.exercises.slice(0, 40)}…` : ""}</div>
               </div>
             </div>
@@ -471,6 +515,7 @@ function WorkoutView({ workouts, shoes, onAdd, onDel }) {
               <Badge color={w.ressenti <= 3 ? C.green : w.ressenti <= 6 ? C.yellow : C.red}>R{w.ressenti}</Badge>
               <Badge color={w.fatigue >= 7 ? C.red : w.fatigue >= 4 ? C.yellow : C.green}>F{w.fatigue}</Badge>
               <Badge color={w.quality >= 8 ? C.green : w.quality >= 5 ? C.yellow : C.red}>Q{w.quality}</Badge>
+              <button onClick={() => handleEdit(w)} title="Modifier" style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 14, padding: 2 }}>✏️</button>
               <button onClick={() => handleCopySession(w)} title="Copier pour le Coach" style={{ background: "none", border: "none", color: copiedId === w.id ? C.green : C.textMuted, cursor: "pointer", fontSize: 14, padding: 2 }}>{copiedId === w.id ? "✅" : "📋"}</button>
               <button onClick={() => onDel(w.id)} style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 14, padding: 2 }}>🗑</button>
             </div>
@@ -632,6 +677,8 @@ function BodyView({ body, onAdd, onDel }) {
 // ═══════════════════════════════════════════════════════════════
 function ShoesView({ shoes, shoeKm, setShoes, flash }) {
   const [f, setF] = useState({ name: "", startDate: today(), alertKm: 600, notes: "" });
+  const [editingShoe, setEditingShoe] = useState(null);
+  const [editName, setEditName] = useState("");
 
   const addShoe = async () => {
     if (!f.name) return;
@@ -646,6 +693,15 @@ function ShoesView({ shoes, shoeKm, setShoes, flash }) {
     setShoes(n); await save(COLLECTIONS.shoes, n); flash("Supprimée");
   };
 
+  const startRename = (s) => { setEditingShoe(s.id); setEditName(s.name); };
+
+  const saveRename = async (id) => {
+    if (!editName.trim()) return;
+    const n = shoes.map(s => s.id === id ? { ...s, name: editName.trim() } : s);
+    setShoes(n); await save(COLLECTIONS.shoes, n);
+    setEditingShoe(null); flash("Nom modifié ✓");
+  };
+
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
     <Card title="👟 Suivi kilométrage chaussures" sub="Le km se calcule automatiquement à partir de tes séances running">
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -655,7 +711,26 @@ function ShoesView({ shoes, shoeKm, setShoes, flash }) {
           const col = pct > 80 ? C.red : pct > 50 ? C.yellow : C.green;
           return <div key={s.id} style={{ padding: 14, background: C.bg, borderRadius: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div><div style={{ fontWeight: 700, fontSize: 14 }}>👟 {s.name}</div><div style={{ fontSize: 11, color: C.textMuted }}>Depuis {fmtD(s.startDate)}{s.notes ? ` • ${s.notes}` : ""}</div></div>
+              <div style={{ flex: 1 }}>
+                {editingShoe === s.id ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input value={editName} onChange={e => setEditName(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && saveRename(s.id)}
+                      style={{ padding: "6px 10px", borderRadius: 6, border: `1px solid ${C.accent}`, background: C.card, color: C.text, fontSize: 14, fontWeight: 700, fontFamily: font, outline: "none", flex: 1 }}
+                      autoFocus />
+                    <button onClick={() => saveRename(s.id)} style={{ background: "none", border: "none", color: C.green, cursor: "pointer", fontSize: 14 }}>✅</button>
+                    <button onClick={() => setEditingShoe(null)} style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 14 }}>✕</button>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 6 }}>
+                      👟 {s.name}
+                      <button onClick={() => startRename(s)} title="Renommer" style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer", fontSize: 12, padding: 0 }}>✏️</button>
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textMuted }}>Depuis {fmtD(s.startDate)}{s.notes ? ` • ${s.notes}` : ""}</div>
+                  </div>
+                )}
+              </div>
               <button onClick={() => delShoe(s.id)} style={{ background: "none", border: "none", color: C.textMuted, cursor: "pointer" }}>🗑</button>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
