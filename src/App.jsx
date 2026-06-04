@@ -7,33 +7,42 @@ async function load(collection) { return await loadData(collection); }
 async function save(collection, data) { await saveData(collection, data); }
 
 // ─── CONSTANTS ───────────────────────────────────────────────
-const C = {
-  bg: "#07090f", card: "#0f1219", card2: "#161c28", border: "#1c2536", borderLight: "#253046",
-  accent: "#f97316", accentDim: "#c2410c", green: "#22c55e", blue: "#3b82f6",
-  purple: "#a855f7", red: "#ef4444", yellow: "#eab308", cyan: "#06b6d4", pink: "#ec4899",
-  text: "#f1f5f9", textDim: "#94a3b8", textMuted: "#64748b",
+// Thèmes : sombre (par défaut) et clair
+const THEMES = {
+  dark: {
+    bg: "#07090f", card: "#0f1219", card2: "#161c28", border: "#1c2536", borderLight: "#253046",
+    accent: "#f76e1e", accentDim: "#c2410c", green: "#22c55e", blue: "#3b82f6",
+    purple: "#a855f7", red: "#ef4444", yellow: "#eab308", cyan: "#06b6d4", pink: "#ec4899",
+    text: "#f1f5f9", textDim: "#94a3b8", textMuted: "#64748b",
+  },
+  light: {
+    bg: "#f5f6f8", card: "#ffffff", card2: "#eef1f5", border: "#e2e8f0", borderLight: "#cbd5e1",
+    accent: "#f76e1e", accentDim: "#c2410c", green: "#16a34a", blue: "#2563eb",
+    purple: "#9333ea", red: "#dc2626", yellow: "#ca8a04", cyan: "#0891b2", pink: "#db2777",
+    text: "#0f172a", textDim: "#475569", textMuted: "#94a3b8",
+  },
 };
+// C est muté dynamiquement selon le thème choisi
+let C = { ...THEMES.dark };
 
-const SESSION_TYPES = ["EF", "Sortie longue", "Fractionné", "Tempo", "Seuil", "Fartlek", "EF récup", "Course (compétition)", "Cali A", "Cali B", "Renfo salle", "Stretching / Mobilité"];
-const DISCIPLINES = ["Course", "Renfo", "Mobilité", "Autre"];
-const METEO_OPTIONS = ["Ensoleillé", "Nuageux", "Pluie", "Pluie + vent", "Vent léger", "Vent 25km/h", "Vent 30km/h", "Vent 35km/h", "Vent 50km/h+", "Plein soleil", "Intérieur", "Froid", "Chaleur"];
+const SESSION_TYPES = ["EF", "Sortie longue", "Fractionné", "Tempo", "Seuil", "Fartlek", "EF récup", "Course (compétition)", "Trail", "Calisthénie", "Renforcement", "Musculation", "Stretching / Mobilité", "Randonnée", "Vélo", "Rameur", "Natation", "Corde à sauter", "Autre"];
+const DISCIPLINES = ["Course", "Renfo", "Mobilité", "Vélo", "Randonnée", "Natation", "Autre"];
+const METEO_OPTIONS = ["Ensoleillé", "Nuageux", "Couvert", "Pluie", "Vent", "Pluie et vent", "Neige", "Chaud", "Froid", "Intérieur"];
 const MEAL_TYPES = ["Petit-déjeuner", "Déjeuner", "Dîner", "Snack / Collation", "Intra-effort", "Post-effort"];
+// Disciplines pour lesquelles on affiche le champ dénivelé
+const ELEVATION_DISCIPLINES = ["Course", "Randonnée", "Vélo"];
+const ELEVATION_TYPES = ["Trail", "Randonnée", "Sortie longue", "Vélo"];
 
 const today = () => new Date().toISOString().slice(0, 10);
 const fmtD = (d) => { const dt = new Date(d + "T12:00:00"); return dt.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" }); };
 const fmtShort = (d) => { const dt = new Date(d + "T12:00:00"); return dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }); };
-const getWeekNum = (d) => {
-  const start = new Date("2026-03-08");
-  const current = new Date(d + "T12:00:00");
-  const diff = Math.floor((current - start) / (7 * 24 * 60 * 60 * 1000));
-  return Math.max(1, diff + 1);
-};
 
 function formatSessionText(w) {
   let t = `📝 **SÉANCE — ${fmtD(w.date)}${w.week ? ` (S${w.week})` : ""}**\n\n`;
   t += `**Type :** ${w.sessionType} | **Discipline :** ${w.discipline}\n`;
   if (w.duration) t += `**Durée :** ${w.duration}\n`;
   if (w.distance) t += `**Distance :** ${w.distance} km\n`;
+  if (w.elevation) t += `**Dénivelé + :** ${w.elevation} m\n`;
   if (w.allure) t += `**Allure moy. :** ${w.allure}\n`;
   if (w.fcMoy) t += `**FC moy :** ${w.fcMoy} bpm\n`;
   if (w.fcMax) t += `**FC max :** ${w.fcMax} bpm\n`;
@@ -41,7 +50,7 @@ function formatSessionText(w) {
   if (w.meteo) t += `**Météo :** ${w.meteo}\n`;
   if (w.exercises) t += `**Exercices :** ${w.exercises}\n`;
   if (w.comments) t += `**Commentaires :** ${w.comments}\n`;
-  t += `\n_Tracker Pro — ${fmtD(today())}_`;
+  t += `\n_Progress — ${fmtD(today())}_`;
   return t;
 }
 
@@ -49,6 +58,10 @@ async function copyText(text) {
   try { await navigator.clipboard.writeText(text); } catch {
     const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
   }
+}
+
+function discIcon(discipline) {
+  return { "Course": "🏃", "Renfo": "💪", "Mobilité": "🧘", "Vélo": "🚴", "Randonnée": "🥾", "Natation": "🏊" }[discipline] || "🏅";
 }
 
 // ─── STYLE COMPONENTS ────────────────────────────────────────
@@ -159,6 +172,15 @@ function Grid({ cols = 2, gap = 14, children, style, mobileCols }) {
   return <div className={`tp-grid tp-grid-${cols} tp-grid-m${mc}`} style={{ display: "grid", gap, ...style }}>{children}</div>;
 }
 
+// Logo : P orange avec tige en éclair sur fond blanc arrondi
+function LogoMark({ size = 32 }) {
+  return <svg width={size} height={size} viewBox="0 0 100 100" style={{ display: "block", flexShrink: 0 }}>
+    <rect width="100" height="100" rx="22" fill="#ffffff" />
+    <path d="M 34 17 L 60 17 A 19 18 0 0 1 60 53 L 41 53 L 41 64 L 36 64 L 30 90 L 41 60 L 41 45 L 55 45 A 9 9 0 0 0 55 27 L 41 27 L 41 17 Z" fill="#f76e1e" />
+    <ellipse cx="51" cy="35" rx="8" ry="6" fill="#ffffff" />
+  </svg>;
+}
+
 // ─── MAIN APP ────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("dashboard");
@@ -169,6 +191,15 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [userId, setUserId] = useState(null);
+  const [theme, setTheme] = useState(() => localStorage.getItem("tp-theme") || "dark");
+
+  // Applique le thème en mutant l'objet C partagé
+  C = { ...THEMES[theme] };
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("tp-theme", next);
+  };
 
   useEffect(() => {
     (async () => {
@@ -178,21 +209,14 @@ export default function App() {
         load(COLLECTIONS.workouts), load(COLLECTIONS.nutrition),
         load(COLLECTIONS.body), load(COLLECTIONS.shoes),
       ]);
-      setWorkouts(w); setNutrition(n); setBody(b);
-      if (s.length === 0) {
-        const def = [
-          { id: "shoe1", name: "NB FuelCell Rebel V5", startDate: "2026-03-22", startKm: 0, alertKm: 600, notes: "Chaussure principale" },
-          { id: "shoe2", name: "Anciennes chaussures", startDate: "2025-10-01", startKm: 350, alertKm: 600, notes: "Récup uniquement" },
-        ];
-        setShoes(def); await save(COLLECTIONS.shoes, def);
-      } else { setShoes(s); }
+      setWorkouts(w); setNutrition(n); setBody(b); setShoes(s);
       setLoading(false);
 
       // Real-time sync — si tu modifies sur un appareil, l'autre se met à jour
       subscribeData(COLLECTIONS.workouts, setWorkouts);
       subscribeData(COLLECTIONS.nutrition, setNutrition);
       subscribeData(COLLECTIONS.body, setBody);
-      subscribeData(COLLECTIONS.shoes, (s) => { if (s.length > 0) setShoes(s); });
+      subscribeData(COLLECTIONS.shoes, setShoes);
     })();
   }, []);
 
@@ -209,7 +233,7 @@ export default function App() {
   }, [workouts, shoes]);
 
   if (loading) return <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, color: C.accent, fontFamily: font }}>
-    <div style={{ textAlign: "center" }}><div style={{ fontSize: 40, marginBottom: 8 }}>⚡</div><div style={{ fontWeight: 700 }}>Chargement…</div></div>
+    <div style={{ textAlign: "center" }}><div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}><LogoMark size={56} /></div><div style={{ fontWeight: 700 }}>Chargement…</div></div>
   </div>;
 
   const tabs = [
@@ -262,11 +286,17 @@ export default function App() {
     {/* HEADER — desktop: full nav, mobile: just title */}
     <div className="tp-header" style={{ padding: "14px 16px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 22 }}>⚡</span>
-        <div><div className="tp-header-title" style={{ fontWeight: 800, fontSize: 17, letterSpacing: "-.4px" }}>Tracker Pro</div><div style={{ fontSize: 11, color: C.textMuted }}>Marathon × Calisthénie</div></div>
+        <LogoMark size={32} />
+        <div><div className="tp-header-title" style={{ fontWeight: 800, fontSize: 17, letterSpacing: "-.4px" }}>Progress</div><div style={{ fontSize: 11, color: C.textMuted }}>Suivi sport & nutrition</div></div>
       </div>
-      <div className="tp-nav-top" style={{ display: "flex", gap: 3, background: C.bg, padding: 3, borderRadius: 10, flexWrap: "wrap" }}>
-        {tabs.map(t => <Tab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)} icon={t.icon} count={t.count}>{t.label}</Tab>)}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button onClick={toggleTheme} title="Changer de thème" style={{
+          background: C.card, border: `1px solid ${C.border}`, borderRadius: 8,
+          padding: "6px 10px", cursor: "pointer", fontSize: 16, lineHeight: 1,
+        }}>{theme === "dark" ? "☀️" : "🌙"}</button>
+        <div className="tp-nav-top" style={{ display: "flex", gap: 3, background: C.bg, padding: 3, borderRadius: 10, flexWrap: "wrap" }}>
+          {tabs.map(t => <Tab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)} icon={t.icon} count={t.count}>{t.label}</Tab>)}
+        </div>
       </div>
     </div>
 
@@ -345,7 +375,7 @@ function DashboardView({ workouts, nutrition, body, shoes, shoeKm }) {
 
   if (workouts.length === 0 && nutrition.length === 0) return <Card style={{ textAlign: "center", padding: 40 }}>
     <div style={{ fontSize: 40, marginBottom: 12 }}>🎯</div>
-    <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Bienvenue dans Tracker Pro</div>
+    <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 6 }}>Bienvenue dans Progress</div>
     <div style={{ color: C.textMuted, maxWidth: 380, margin: "0 auto" }}>Commence par enregistrer ta première séance ou tes données nutrition.</div>
   </Card>;
 
@@ -386,7 +416,7 @@ function DashboardView({ workouts, nutrition, body, shoes, shoeKm }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {workouts.slice(0, 5).map(w => <div key={w.id} className="tp-history-item" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: C.bg, borderRadius: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span>{w.discipline === "Course" ? "🏃" : w.discipline === "Renfo" ? "💪" : "🧘"}</span>
+            <span>{discIcon(w.discipline)}</span>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600 }}>{w.sessionType}</div>
               <div style={{ fontSize: 11, color: C.textMuted }}>{fmtD(w.date)} • S{w.week || "?"}</div>
@@ -413,7 +443,7 @@ function DashboardView({ workouts, nutrition, body, shoes, shoeKm }) {
 function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
   const emptyForm = {
     date: today(), week: "", sessionType: "", discipline: "Course",
-    duration: "", distance: "", fcMoy: "", fcMax: "", allure: "",
+    duration: "", distance: "", elevation: "", fcMoy: "", fcMax: "", allure: "",
     ressenti: 5, fatigue: 3, quality: 7, meteo: "", shoeId: "",
     exercises: "", comments: "",
   };
@@ -423,7 +453,10 @@ function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
   const formRef = useRef(null);
 
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  // Distance/allure/chaussures pour les disciplines de type course/vélo/rando
+  const isDistance = ELEVATION_DISCIPLINES.includes(f.discipline) || f.discipline === "Natation";
   const isRun = f.discipline === "Course";
+  const showElevation = ELEVATION_DISCIPLINES.includes(f.discipline) || ELEVATION_TYPES.includes(f.sessionType);
 
   const handleSave = () => {
     if (!f.sessionType) return;
@@ -440,7 +473,8 @@ function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
     setF({
       date: w.date || today(), week: w.week || "", sessionType: w.sessionType || "",
       discipline: w.discipline || "Course", duration: w.duration || "",
-      distance: w.distance ? String(w.distance) : "", fcMoy: w.fcMoy || "", fcMax: w.fcMax || "",
+      distance: w.distance ? String(w.distance) : "", elevation: w.elevation || "",
+      fcMoy: w.fcMoy || "", fcMax: w.fcMax || "",
       allure: w.allure || "", ressenti: w.ressenti || 5, fatigue: w.fatigue || 3,
       quality: w.quality || 7, meteo: w.meteo || "", shoeId: w.shoeId || "",
       exercises: w.exercises || "", comments: w.comments || "",
@@ -458,7 +492,7 @@ function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
   };
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-    <Card title={editingId ? "✏️ Modifier la séance" : "📝 Nouvelle séance"} sub="Semaine, Date, Type, Discipline, Durée, Distance, FC moy, FC max, Allure, Ressenti, Fatigue, Qualité, Météo, Exercices, Commentaires">
+    <Card title={editingId ? "✏️ Modifier la séance" : "📝 Nouvelle séance"} sub="Renseigne les champs pertinents pour ta séance. Les champs distance, allure et dénivelé s'affichent selon la discipline.">
       <div ref={formRef} />
       {editingId && <div style={{ marginBottom: 12, padding: "8px 12px", background: C.accent + "1a", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 13, color: C.accent, fontWeight: 600 }}>Mode édition</span>
@@ -470,21 +504,22 @@ function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
         <Sel label="Type de séance" options={SESSION_TYPES} value={f.sessionType} onChange={e => set("sessionType", e.target.value)} />
         <Sel label="Discipline" options={DISCIPLINES} value={f.discipline} onChange={e => set("discipline", e.target.value)} />
       </Grid>
-      <Grid cols={isRun ? 5 : 3} gap={12} style={{ marginBottom: 14 }} mobileCols={2}>
+      <Grid cols={4} gap={12} style={{ marginBottom: 14 }} mobileCols={2}>
         <Inp label="Durée" value={f.duration} onChange={e => set("duration", e.target.value)} placeholder="56 min / 1h52" />
-        {isRun && <Inp label="Distance (km)" type="number" step="0.01" value={f.distance} onChange={e => set("distance", e.target.value)} placeholder="17.03" />}
+        {isDistance && <Inp label="Distance (km)" type="number" step="0.01" value={f.distance} onChange={e => set("distance", e.target.value)} placeholder="17.03" />}
+        {showElevation && <Inp label="Dénivelé + (m)" type="number" value={f.elevation} onChange={e => set("elevation", e.target.value)} placeholder="450" />}
         <Inp label="FC moy. (bpm)" type="number" value={f.fcMoy} onChange={e => set("fcMoy", e.target.value)} placeholder="142" />
         <Inp label="FC max (bpm)" type="number" value={f.fcMax} onChange={e => set("fcMax", e.target.value)} placeholder="174" />
-        {isRun && <Inp label="Allure moy. (/km)" value={f.allure} onChange={e => set("allure", e.target.value)} placeholder="8:34/km" />}
+        {isDistance && <Inp label="Allure moy. (/km)" value={f.allure} onChange={e => set("allure", e.target.value)} placeholder="8:34/km" />}
       </Grid>
       <Grid cols={3} gap={12} style={{ marginBottom: 14 }} mobileCols={1}>
         <Slider3 label="Ressenti" value={f.ressenti} onChange={v => set("ressenti", v)} low="Excellent" high="Très dur" />
         <Slider3 label="Fatigue" value={f.fatigue} onChange={v => set("fatigue", v)} low="Frais" high="Épuisé" />
         <Slider3 label="Qualité séance" value={f.quality} onChange={v => set("quality", v)} low="Mauvaise" high="Parfaite" invert />
       </Grid>
-      <Grid cols={isRun ? 2 : 1} gap={12} style={{ marginBottom: 14 }} mobileCols={1}>
+      <Grid cols={2} gap={12} style={{ marginBottom: 14 }} mobileCols={1}>
         <Sel label="Météo" options={METEO_OPTIONS} value={f.meteo} onChange={e => set("meteo", e.target.value)} />
-        {isRun && <Sel label="Chaussures" options={shoes.map(s => s.name)} value={shoes.find(s => s.id === f.shoeId)?.name || ""} onChange={e => { const sh = shoes.find(s => s.name === e.target.value); set("shoeId", sh?.id || ""); }} />}
+        {isRun && shoes.length > 0 && <Sel label="Chaussures" options={shoes.map(s => s.name)} value={shoes.find(s => s.id === f.shoeId)?.name || ""} onChange={e => { const sh = shoes.find(s => s.name === e.target.value); set("shoeId", sh?.id || ""); }} />}
       </Grid>
       <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 14 }}>
         <Txta label="Exercices / Détails" value={f.exercises} onChange={e => set("exercises", e.target.value)} placeholder="Pompes 4×15&#10;Pike 3×10&#10;Dips 4×10&#10;Gainage 3×1min" rows={4} />
@@ -501,7 +536,7 @@ function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
         : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {workouts.slice(0, 30).map(w => <div key={w.id} className="tp-history-item" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: editingId === w.id ? C.accent + "11" : C.bg, borderRadius: 8, gap: 8, border: editingId === w.id ? `1px solid ${C.accent}44` : "1px solid transparent" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-              <span>{w.discipline === "Course" ? "🏃" : w.discipline === "Renfo" ? "💪" : "🧘"}</span>
+              <span>{discIcon(w.discipline)}</span>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{w.week ? `S${w.week} — ` : ""}{w.sessionType}</div>
                 <div style={{ fontSize: 11, color: C.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fmtD(w.date)}{w.meteo ? ` • ${w.meteo}` : ""}{w.exercises ? ` • ${w.exercises.slice(0, 40)}…` : ""}</div>
@@ -509,6 +544,7 @@ function WorkoutView({ workouts, shoes, onAdd, onDel, onUpdate }) {
             </div>
             <div className="tp-badge-row tp-history-badges" style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap", flexShrink: 0 }}>
               {w.distance && <Badge color={C.accent}>{w.distance} km</Badge>}
+              {w.elevation && <Badge color={C.green}>D+{w.elevation}m</Badge>}
               {w.duration && <Badge color={C.blue}>{w.duration}</Badge>}
               {w.fcMoy && <Badge color={C.pink}>FC{w.fcMoy}</Badge>}
               {w.fcMax && <Badge color={C.red}>Max{w.fcMax}</Badge>}
@@ -613,15 +649,15 @@ function BodyView({ body, onAdd, onDel }) {
 
   const handleSave = () => {
     if (!f.poids && !f.taille) return;
-    onAdd({ id: Date.now().toString(), ...f, week: f.week || getWeekNum(f.date) });
+    onAdd({ id: Date.now().toString(), ...f });
     setF(p => ({ ...p, poids: "", taille: "", poitrine: "", cuisse: "", gras: "", comments: "" }));
   };
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-    <Card title="📏 Mesures physiques" sub="Poids, tours, composition — conforme à l'onglet 📊 Poids & Physique">
+    <Card title="📏 Mesures physiques" sub="Poids, tours de taille, composition corporelle">
       <Grid cols={4} gap={12} style={{ marginBottom: 14 }} mobileCols={2}>
         <Inp label="Date" type="date" value={f.date} onChange={e => set("date", e.target.value)} />
-        <Inp label="Semaine" type="number" value={f.week} onChange={e => set("week", e.target.value)} placeholder={`Auto (S${getWeekNum(f.date)})`} />
+        <Inp label="Semaine" type="number" value={f.week} onChange={e => set("week", e.target.value)} placeholder="N° semaine" />
         <Inp label="Poids (kg)" type="number" step="0.1" value={f.poids} onChange={e => set("poids", e.target.value)} placeholder="74.0" />
         <Inp label="% Gras estimé" value={f.gras} onChange={e => set("gras", e.target.value)} placeholder="~20%" />
       </Grid>
@@ -705,6 +741,7 @@ function ShoesView({ shoes, shoeKm, setShoes, flash }) {
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
     <Card title="👟 Suivi kilométrage chaussures" sub="Le km se calcule automatiquement à partir de tes séances running">
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {shoes.length === 0 && <div style={{ color: C.textMuted, textAlign: "center", padding: 24, fontSize: 13 }}>Aucune paire enregistrée. Ajoute ta première paire ci-dessous pour suivre son kilométrage.</div>}
         {shoes.map(s => {
           const km = shoeKm[s.id] || 0;
           const pct = Math.min(100, (km / (s.alertKm || 600)) * 100);
@@ -785,8 +822,9 @@ function SummaryView({ workouts, nutrition, body, shoes, shoeKm }) {
     t += `## 🏃 RUNNING (${runs.length} séances — ${totalKm.toFixed(1)} km total)\n`;
     if (!runs.length) t += "Aucune séance running.\n";
     runs.forEach(r => {
-      t += `- **${fmtD(r.date)}** (S${r.week}) | ${r.sessionType}`;
+      t += `- **${fmtD(r.date)}**${r.week ? ` (S${r.week})` : ""} | ${r.sessionType}`;
       if (r.distance) t += ` | ${r.distance} km`;
+      if (r.elevation) t += ` | D+ ${r.elevation}m`;
       if (r.duration) t += ` | ${r.duration}`;
       if (r.allure) t += ` | ${r.allure}`;
       if (r.fcMoy) t += ` | FC moy ${r.fcMoy}`;
@@ -798,10 +836,10 @@ function SummaryView({ workouts, nutrition, body, shoes, shoeKm }) {
       t += "\n";
     });
 
-    t += `\n## 💪 CALISTHÉNIE / RENFO (${renfo.length} séances)\n`;
-    if (!renfo.length) t += "Aucune séance renfo.\n";
+    t += `\n## 💪 RENFORCEMENT / CALISTHÉNIE (${renfo.length} séances)\n`;
+    if (!renfo.length) t += "Aucune séance de renforcement.\n";
     renfo.forEach(r => {
-      t += `- **${fmtD(r.date)}** (S${r.week}) | ${r.sessionType}`;
+      t += `- **${fmtD(r.date)}**${r.week ? ` (S${r.week})` : ""} | ${r.sessionType}`;
       if (r.duration) t += ` | ${r.duration}`;
       if (r.fcMoy) t += ` | FC moy ${r.fcMoy}`;
       if (r.fcMax) t += ` | FC max ${r.fcMax}`;
@@ -832,7 +870,7 @@ function SummaryView({ workouts, nutrition, body, shoes, shoeKm }) {
     if (data.b.length) {
       t += `\n## 📏 PHYSIQUE\n`;
       data.b.forEach(b => {
-        t += `- **${fmtD(b.date)}** (S${b.week})`;
+        t += `- **${fmtD(b.date)}**${b.week ? ` (S${b.week})` : ""}`;
         if (b.poids) t += ` | ${b.poids} kg`;
         if (b.taille) t += ` | Taille ${b.taille} cm`;
         if (b.poitrine) t += ` | Poitrine ${b.poitrine} cm`;
@@ -849,7 +887,7 @@ function SummaryView({ workouts, nutrition, body, shoes, shoeKm }) {
       t += `- ${s.name} : ${km.toFixed(0)} km / ${s.alertKm} km${s.notes ? ` (${s.notes})` : ""}\n`;
     });
 
-    t += `\n---\n_Généré par Tracker Pro le ${fmtD(today())}_`;
+    t += `\n---\n_Généré par Progress le ${fmtD(today())}_`;
     return t;
   }, [data, range, shoes, shoeKm]);
 
@@ -939,7 +977,7 @@ function SettingsView({ userId }) {
           <span style={{ fontWeight: 700, color: C.accent }}>1.</span> Sur ton <span style={{ fontWeight: 700, color: C.text }}>premier appareil</span> (celui où tu as déjà des données), copie le code ci-dessus.
         </div>
         <div style={{ padding: 12, background: C.bg, borderRadius: 10 }}>
-          <span style={{ fontWeight: 700, color: C.accent }}>2.</span> Sur ton <span style={{ fontWeight: 700, color: C.text }}>deuxième appareil</span> (iPhone, autre PC…), ouvre Tracker Pro, va dans Sync, et colle le code dans "Lier un autre appareil".
+          <span style={{ fontWeight: 700, color: C.accent }}>2.</span> Sur ton <span style={{ fontWeight: 700, color: C.text }}>deuxième appareil</span> (iPhone, autre PC…), ouvre Progress, va dans Sync, et colle le code dans "Lier un autre appareil".
         </div>
         <div style={{ padding: 12, background: C.bg, borderRadius: 10 }}>
           <span style={{ fontWeight: 700, color: C.accent }}>3.</span> Les deux appareils partagent maintenant les <span style={{ fontWeight: 700, color: C.green }}>mêmes données en temps réel</span>. Toute modification sur l'un apparaît instantanément sur l'autre.
