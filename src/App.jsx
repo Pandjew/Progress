@@ -889,7 +889,7 @@ function ShoesView({ shoes, shoeKm, setShoes, flash }) {
 // STATS — profil radar façon "attributs" avec comparaison de périodes
 // ═══════════════════════════════════════════════════════════════
 function StatsView({ workouts }) {
-  const [range, setRange] = useState(28); // fenêtre en jours
+  const [range, setRange] = useState(90); // fenêtre en jours (3 mois par défaut)
   const [compare, setCompare] = useState(true);
 
   const runs = workouts.filter(w => w.discipline === "Course");
@@ -928,9 +928,9 @@ function StatsView({ workouts }) {
           <div style={{ fontWeight: 800, fontSize: 17 }}>🎯 Profil athlète</div>
           <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>Ton évolution sur 6 axes, calculée depuis tes séances</div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {[{ d: 14, l: "2 sem" }, { d: 28, l: "4 sem" }, { d: 56, l: "8 sem" }].map(o =>
-            <Btn key={o.d} v={range === o.d ? "primary" : "ghost"} onClick={() => setRange(o.d)}>{o.l}</Btn>)}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[{ d: 30, l: "1 mois" }, { d: 90, l: "3 mois" }, { d: 180, l: "6 mois" }, { d: 365, l: "1 an" }, { d: 1095, l: "3 ans" }, { d: 1825, l: "5 ans" }].map(o =>
+            <Btn key={o.d} v={range === o.d ? "primary" : "ghost"} onClick={() => setRange(o.d)} style={{ padding: "7px 12px", fontSize: 12 }}>{o.l}</Btn>)}
         </div>
       </div>
     </Card>
