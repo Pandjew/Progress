@@ -107,16 +107,18 @@ function computeProfile(ws, allTimeMaxEff) {
   const longest = Math.max(0, ...runs.map(w => parseFloat(w.distance) || 0));
   const endurance = clamp(longest / 32 * 100);
 
-  // 2. ALLURE — meilleure allure sur séance de qualité (barème fixe : 3:30=100, 6:30=0)
-  const qPaces = runs.filter(w => QUALITY_TYPES.includes(w.sessionType)).map(w => parsePace(w.allure)).filter(Boolean);
-  const bestPace = qPaces.length ? Math.min(...qPaces) : null;
-  const allure = bestPace ? clamp((390 - bestPace) / (390 - 210) * 100) : 0;
+  // 2. ALLURE — meilleure allure sur toutes les courses (barème fixe : 8:00/km=0, 4:00/km=100)
+  // On prend le meilleur effort : un EF lent ne battra jamais un tempo.
+  const allPaces = runs.map(w => parsePace(w.allure)).filter(Boolean);
+  const bestPace = allPaces.length ? Math.min(...allPaces) : null;
+  const allure = bestPace ? clamp((480 - bestPace) / (480 - 240) * 100) : 0;
 
-  // 3. VO2MAX — meilleur VDOT sur effort soutenu (barème fixe : 35=0, 60=100)
-  const vdots = runs.filter(w => QUALITY_TYPES.includes(w.sessionType) && w.distance && w.allure)
+  // 3. VO2MAX — meilleur VDOT sur toutes les courses avec distance + allure (barème : 25=0, 50=100)
+  // Le max ressort naturellement de la séance la plus rapide.
+  const vdots = runs.filter(w => w.distance && parsePace(w.allure))
     .map(w => vdotFromEffort(parseFloat(w.distance), parsePace(w.allure))).filter(Boolean);
   const bestVdot = vdots.length ? Math.max(...vdots) : null;
-  const vo2 = bestVdot ? clamp((bestVdot - 35) / (60 - 35) * 100) : 0;
+  const vo2 = bestVdot ? clamp((bestVdot - 25) / (50 - 25) * 100) : 0;
 
   // 4. EFFICACITÉ CARDIO — vitesse/FC sur séances régulières (barème relatif à soi)
   const effs = runs.filter(w => STEADY_TYPES.includes(w.sessionType) && w.distance && w.allure && w.fcMoy)
@@ -138,10 +140,10 @@ function computeProfile(ws, allTimeMaxEff) {
   return {
     axes: [
       { axis: "Endurance", value: Math.round(endurance), detail: longest ? `Plus longue sortie : ${longest.toFixed(1)} km (cible 32 km)` : "Aucune sortie enregistrée" },
-      { axis: "Allure", value: Math.round(allure), detail: bestPace ? `Meilleure allure qualité : ${fmtPace(bestPace)}` : "Aucune séance de qualité (tempo, fractionné…)" },
-      { axis: "VO2max", value: Math.round(vo2), detail: bestVdot ? `VDOT estimé : ${bestVdot.toFixed(1)}` : "Besoin d'un effort soutenu avec distance + allure" },
+      { axis: "Allure", value: Math.round(allure), detail: bestPace ? `Meilleure allure : ${fmtPace(bestPace)}` : "Aucune course avec allure renseignée" },
+      { axis: "VO2max", value: Math.round(vo2), detail: bestVdot ? `VDOT estimé : ${bestVdot.toFixed(1)} (meilleur effort)` : "Besoin d'une course avec distance + allure" },
       { axis: "Eff. cardio", value: Math.round(efficacite), detail: bestEff ? `Indice vitesse/FC : ${bestEff.toFixed(2)} (relatif à ton record)` : "Besoin de séances EF avec distance + allure + FC" },
-      { axis: "Force", value: Math.round(force), detail: renfo.length ? `${renfo.length} séances renfo · qualité moy ${avgQ.toFixed(1)}/10` : "Aucune séance de renforcement" },
+      { axis: "Force", value: Math.round(force), detail: renfo.length ? `${renfo.length} séance${renfo.length > 1 ? "s" : ""} renfo · qualité moy ${avgQ.toFixed(1)}/10` : "Aucune séance de renforcement" },
       { axis: "Fraîcheur", value: Math.round(fraicheur), detail: ws.length ? `Fatigue moyenne ${avgFat.toFixed(1)}/10 (inversée)` : "Aucune séance sur la période" },
     ],
     overall: Math.round((endurance + allure + vo2 + efficacite + force + fraicheur) / 6),
