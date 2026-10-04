@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } from "recharts";
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Legend } from "recharts";
 import { initAuth, getUserId, linkDevice, saveData, loadData, subscribeData, COLLECTIONS } from './firebase.js';
 
 // ─── STORAGE (Firebase-backed) ───────────────────────────────
@@ -62,6 +62,97 @@ async function copyText(text) {
 
 function discIcon(discipline) {
   return { "Course": "🏃", "Renfo": "💪", "Mobilité": "🧘", "Vélo": "🚴", "Randonnée": "🥾", "Natation": "🏊" }[discipline] || "🏅";
+}
+
+// ─── CALCUL DU PROFIL STATS (radar) ──────────────────────────
+const clamp = (v, min = 0, max = 100) => Math.max(min, Math.min(max, v));
+
+// Parse une allure "8:34/km" ou "5:12" → secondes par km
+function parsePace(str) {
+  if (!str) return null;
+  const m = String(str).match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  return parseInt(m[1]) * 60 + parseInt(m[2]);
+}
+
+// Formate des secondes/km → "M:SS/km"
+function fmtPace(sec) {
+  if (!sec) return "—";
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  return `${m}:${String(s).padStart(2, "0")}/km`;
+}
+
+// Estimation VDOT (VO2max fonctionnel) selon la formule de Jack Daniels,
+// à partir d'un effort soutenu : distance (km) + allure (sec/km)
+function vdotFromEffort(distanceKm, paceSec) {
+  if (!distanceKm || !paceSec) return null;
+  const totalMin = (distanceKm * paceSec) / 60;        // durée totale en minutes
+  const v = (distanceKm * 1000) / totalMin;            // vitesse en m/min
+  const vo2 = -4.60 + 0.182258 * v + 0.000104 * v * v;
+  const pct = 0.8 + 0.1894393 * Math.exp(-0.012778 * totalMin) + 0.2989558 * Math.exp(-0.1932605 * totalMin);
+  if (pct <= 0) return null;
+  return vo2 / pct;
+}
+
+const QUALITY_TYPES = ["Fractionné", "Tempo", "Seuil", "VMA / Fractionné", "Course (compétition)"];
+const STEADY_TYPES = ["EF", "EF récup", "Sortie longue", "Footing récup"];
+
+// Calcule les 6 axes du radar pour un ensemble de séances.
+// allTimeMaxEff : référence d'efficacité cardio sur TOUT l'historique (barème relatif)
+function computeProfile(ws, allTimeMaxEff) {
+  const runs = ws.filter(w => w.discipline === "Course");
+  const renfo = ws.filter(w => w.discipline === "Renfo");
+
+  // 1. ENDURANCE — plus longue sortie (barème fixe : 32 km = 100)
+  const longest = Math.max(0, ...runs.map(w => parseFloat(w.distance) || 0));
+  const endurance = clamp(longest / 32 * 100);
+
+  // 2. ALLURE — meilleure allure sur séance de qualité (barème fixe : 3:30=100, 6:30=0)
+  const qPaces = runs.filter(w => QUALITY_TYPES.includes(w.sessionType)).map(w => parsePace(w.allure)).filter(Boolean);
+  const bestPace = qPaces.length ? Math.min(...qPaces) : null;
+  const allure = bestPace ? clamp((390 - bestPace) / (390 - 210) * 100) : 0;
+
+  // 3. VO2MAX — meilleur VDOT sur effort soutenu (barème fixe : 35=0, 60=100)
+  const vdots = runs.filter(w => QUALITY_TYPES.includes(w.sessionType) && w.distance && w.allure)
+    .map(w => vdotFromEffort(parseFloat(w.distance), parsePace(w.allure))).filter(Boolean);
+  const bestVdot = vdots.length ? Math.max(...vdots) : null;
+  const vo2 = bestVdot ? clamp((bestVdot - 35) / (60 - 35) * 100) : 0;
+
+  // 4. EFFICACITÉ CARDIO — vitesse/FC sur séances régulières (barème relatif à soi)
+  const effs = runs.filter(w => STEADY_TYPES.includes(w.sessionType) && w.distance && w.allure && w.fcMoy)
+    .map(w => { const ps = parsePace(w.allure); return ps ? (60000 / ps) / parseFloat(w.fcMoy) : null; }).filter(Boolean);
+  const bestEff = effs.length ? Math.max(...effs) : null;
+  const efficacite = (bestEff && allTimeMaxEff) ? clamp(bestEff / allTimeMaxEff * 100) : 0;
+
+  // 5. FORCE / CALISTHÉNIE — volume (cible 3/sem) + qualité (barème mixte)
+  const periodDays = 28; // base de référence : 4 semaines
+  const target = 12;     // 3 séances renfo/semaine sur 4 semaines
+  const volScore = clamp(renfo.length / target * 100);
+  const avgQ = renfo.length ? renfo.reduce((s, w) => s + (w.quality || 0), 0) / renfo.length : 0;
+  const force = clamp(0.6 * volScore + 0.4 * (avgQ / 10 * 100));
+
+  // 6. FRAÎCHEUR — fatigue moyenne inversée (barème fixe : fatigue 1=100, 10=0)
+  const avgFat = ws.length ? ws.reduce((s, w) => s + (w.fatigue || 0), 0) / ws.length : 0;
+  const fraicheur = ws.length ? clamp((10 - avgFat) / 9 * 100) : 0;
+
+  return {
+    axes: [
+      { axis: "Endurance", value: Math.round(endurance), detail: longest ? `Plus longue sortie : ${longest.toFixed(1)} km (cible 32 km)` : "Aucune sortie enregistrée" },
+      { axis: "Allure", value: Math.round(allure), detail: bestPace ? `Meilleure allure qualité : ${fmtPace(bestPace)}` : "Aucune séance de qualité (tempo, fractionné…)" },
+      { axis: "VO2max", value: Math.round(vo2), detail: bestVdot ? `VDOT estimé : ${bestVdot.toFixed(1)}` : "Besoin d'un effort soutenu avec distance + allure" },
+      { axis: "Eff. cardio", value: Math.round(efficacite), detail: bestEff ? `Indice vitesse/FC : ${bestEff.toFixed(2)} (relatif à ton record)` : "Besoin de séances EF avec distance + allure + FC" },
+      { axis: "Force", value: Math.round(force), detail: renfo.length ? `${renfo.length} séances renfo · qualité moy ${avgQ.toFixed(1)}/10` : "Aucune séance de renforcement" },
+      { axis: "Fraîcheur", value: Math.round(fraicheur), detail: ws.length ? `Fatigue moyenne ${avgFat.toFixed(1)}/10 (inversée)` : "Aucune séance sur la période" },
+    ],
+    overall: Math.round((endurance + allure + vo2 + efficacite + force + fraicheur) / 6),
+  };
+}
+
+// Référence d'efficacité cardio sur tout l'historique (pour le barème relatif)
+function allTimeEfficiency(workouts) {
+  const effs = workouts.filter(w => w.discipline === "Course" && STEADY_TYPES.includes(w.sessionType) && w.distance && w.allure && w.fcMoy)
+    .map(w => { const ps = parsePace(w.allure); return ps ? (60000 / ps) / parseFloat(w.fcMoy) : null; }).filter(Boolean);
+  return effs.length ? Math.max(...effs) : null;
 }
 
 // ─── STYLE COMPONENTS ────────────────────────────────────────
@@ -241,8 +332,8 @@ export default function App() {
     { id: "workout", icon: "💪", label: "Séance", count: workouts.length },
     { id: "nutrition", icon: "🥗", label: "Nutrition", count: nutrition.length },
     { id: "body", icon: "📏", label: "Physique", count: body.length },
+    { id: "stats", icon: "🎯", label: "Stats" },
     { id: "shoes", icon: "👟", label: "Chaussures" },
-    { id: "summary", icon: "📋", label: "Résumé Coach" },
     { id: "settings", icon: "⚙️", label: "Sync" },
   ];
 
@@ -330,8 +421,8 @@ export default function App() {
       {tab === "body" && <BodyView body={body}
         onAdd={b => { add(COLLECTIONS.body, setBody, body, b); flash("Mesure enregistrée ✓"); }}
         onDel={id => { del(COLLECTIONS.body, setBody, body, id); flash("Supprimée"); }} />}
+      {tab === "stats" && <StatsView workouts={workouts} />}
       {tab === "shoes" && <ShoesView shoes={shoes} shoeKm={shoeKm} setShoes={setShoes} flash={flash} />}
-      {tab === "summary" && <SummaryView workouts={workouts} nutrition={nutrition} body={body} shoes={shoes} shoeKm={shoeKm} />}
       {tab === "settings" && <SettingsView userId={userId} />}
     </div>
   </div>;
@@ -793,132 +884,134 @@ function ShoesView({ shoes, shoeKm, setShoes, flash }) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SUMMARY — copy-paste for Coach conversation
+// STATS — profil radar façon "attributs" avec comparaison de périodes
 // ═══════════════════════════════════════════════════════════════
-function SummaryView({ workouts, nutrition, body, shoes, shoeKm }) {
-  const [range, setRange] = useState(7);
-  const [copied, setCopied] = useState(false);
+function StatsView({ workouts }) {
+  const [range, setRange] = useState(28); // fenêtre en jours
+  const [compare, setCompare] = useState(true);
 
-  const data = useMemo(() => {
-    const d = new Date(); d.setDate(d.getDate() - range); const cut = d.toISOString().slice(0, 10);
+  const runs = workouts.filter(w => w.discipline === "Course");
+  const allTimeMaxEff = useMemo(() => allTimeEfficiency(workouts), [workouts]);
+
+  // Fenêtre actuelle et fenêtre précédente (même durée)
+  const { current, previous, curProfile, prevProfile } = useMemo(() => {
+    const now = new Date();
+    const startCur = new Date(now); startCur.setDate(now.getDate() - range);
+    const startPrev = new Date(now); startPrev.setDate(now.getDate() - range * 2);
+    const cutCur = startCur.toISOString().slice(0, 10);
+    const cutPrev = startPrev.toISOString().slice(0, 10);
+    const current = workouts.filter(w => w.date >= cutCur);
+    const previous = workouts.filter(w => w.date >= cutPrev && w.date < cutCur);
     return {
-      w: workouts.filter(w => w.date >= cut).sort((a, b) => a.date.localeCompare(b.date)),
-      n: nutrition.filter(n => n.date >= cut).sort((a, b) => a.date.localeCompare(b.date)),
-      b: body.filter(b => b.date >= cut).sort((a, b) => a.date.localeCompare(b.date)),
+      current, previous,
+      curProfile: computeProfile(current, allTimeMaxEff),
+      prevProfile: computeProfile(previous, allTimeMaxEff),
     };
-  }, [workouts, nutrition, body, range]);
+  }, [workouts, range, allTimeMaxEff]);
 
-  const summary = useMemo(() => {
-    let t = `📊 **RAPPORT D'ENTRAÎNEMENT & NUTRITION — ${range} derniers jours**\n`;
-    t += `📅 Du ${data.w.length ? fmtD(data.w[0].date) : "—"} au ${fmtD(today())}\n\n`;
+  // Données pour le radar recharts
+  const radarData = curProfile.axes.map((a, i) => ({
+    axis: a.axis,
+    actuel: a.value,
+    precedent: prevProfile.axes[i].value,
+  }));
 
-    const runs = data.w.filter(w => w.discipline === "Course");
-    const renfo = data.w.filter(w => w.discipline === "Renfo");
-    const totalKm = runs.reduce((s, w) => s + (parseFloat(w.distance) || 0), 0);
-    const avgFatigue = data.w.length ? (data.w.reduce((s, w) => s + (w.fatigue || 0), 0) / data.w.length).toFixed(1) : "—";
-    const avgQuality = data.w.length ? (data.w.reduce((s, w) => s + (w.quality || 0), 0) / data.w.length).toFixed(1) : "—";
-    const avgRessenti = data.w.length ? (data.w.reduce((s, w) => s + (w.ressenti || 0), 0) / data.w.length).toFixed(1) : "—";
-
-    t += `## 🏃 RUNNING (${runs.length} séances — ${totalKm.toFixed(1)} km total)\n`;
-    if (!runs.length) t += "Aucune séance running.\n";
-    runs.forEach(r => {
-      t += `- **${fmtD(r.date)}**${r.week ? ` (S${r.week})` : ""} | ${r.sessionType}`;
-      if (r.distance) t += ` | ${r.distance} km`;
-      if (r.elevation) t += ` | D+ ${r.elevation}m`;
-      if (r.duration) t += ` | ${r.duration}`;
-      if (r.allure) t += ` | ${r.allure}`;
-      if (r.fcMoy) t += ` | FC moy ${r.fcMoy}`;
-      if (r.fcMax) t += ` | FC max ${r.fcMax}`;
-      t += ` | Ressenti ${r.ressenti}/10 | Fatigue ${r.fatigue}/10 | Qualité ${r.quality}/10`;
-      if (r.meteo) t += ` | ${r.meteo}`;
-      if (r.exercises) t += `\n  Détail : ${r.exercises}`;
-      if (r.comments) t += `\n  → ${r.comments}`;
-      t += "\n";
-    });
-
-    t += `\n## 💪 RENFORCEMENT / CALISTHÉNIE (${renfo.length} séances)\n`;
-    if (!renfo.length) t += "Aucune séance de renforcement.\n";
-    renfo.forEach(r => {
-      t += `- **${fmtD(r.date)}**${r.week ? ` (S${r.week})` : ""} | ${r.sessionType}`;
-      if (r.duration) t += ` | ${r.duration}`;
-      if (r.fcMoy) t += ` | FC moy ${r.fcMoy}`;
-      if (r.fcMax) t += ` | FC max ${r.fcMax}`;
-      t += ` | Ressenti ${r.ressenti}/10 | Fatigue ${r.fatigue}/10 | Qualité ${r.quality}/10`;
-      if (r.meteo) t += ` | ${r.meteo}`;
-      if (r.exercises) t += `\n  Exercices : ${r.exercises}`;
-      if (r.comments) t += `\n  → ${r.comments}`;
-      t += "\n";
-    });
-
-    t += `\n**Moyennes période :** Ressenti ${avgRessenti}/10 | Fatigue ${avgFatigue}/10 | Qualité ${avgQuality}/10\n`;
-
-    t += `\n## 🥗 NUTRITION (${data.n.length} jours)\n`;
-    if (data.n.length) {
-      const ac = Math.round(data.n.reduce((s, n) => s + (n.totalCalories || 0), 0) / data.n.length);
-      const ap = Math.round(data.n.reduce((s, n) => s + (n.totalProtein || 0), 0) / data.n.length);
-      const ag = Math.round(data.n.reduce((s, n) => s + (n.totalCarbs || 0), 0) / data.n.length);
-      const al = Math.round(data.n.reduce((s, n) => s + (n.totalFat || 0), 0) / data.n.length);
-      const aw = (data.n.reduce((s, n) => s + (n.water || 0), 0) / data.n.length).toFixed(1);
-      t += `**Moy./jour :** ${ac} kcal | ${ap}g P | ${ag}g G | ${al}g L | ${aw}L eau\n\n`;
-      t += `| Date | Kcal | P(g) | G(g) | L(g) | Eau | Détail |\n|------|------|------|------|------|-----|--------|\n`;
-      data.n.forEach(n => {
-        const det = n.mode === "meals" && n.meals ? n.meals.map(m => `${m.type}: ${m.desc}`).join(" / ") : (n.notes || "—");
-        t += `| ${fmtD(n.date)} | ${n.totalCalories} | ${n.totalProtein} | ${n.totalCarbs} | ${n.totalFat} | ${n.water || "—"}L | ${det.slice(0, 50)} |\n`;
-      });
-    } else t += "Aucune donnée.\n";
-
-    if (data.b.length) {
-      t += `\n## 📏 PHYSIQUE\n`;
-      data.b.forEach(b => {
-        t += `- **${fmtD(b.date)}**${b.week ? ` (S${b.week})` : ""}`;
-        if (b.poids) t += ` | ${b.poids} kg`;
-        if (b.taille) t += ` | Taille ${b.taille} cm`;
-        if (b.poitrine) t += ` | Poitrine ${b.poitrine} cm`;
-        if (b.cuisse) t += ` | Cuisse ${b.cuisse} cm`;
-        if (b.gras) t += ` | Gras ${b.gras}`;
-        if (b.comments) t += ` | ${b.comments}`;
-        t += "\n";
-      });
-    }
-
-    t += `\n## 👟 CHAUSSURES\n`;
-    shoes.forEach(s => {
-      const km = shoeKm[s.id] || 0;
-      t += `- ${s.name} : ${km.toFixed(0)} km / ${s.alertKm} km${s.notes ? ` (${s.notes})` : ""}\n`;
-    });
-
-    t += `\n---\n_Généré par Progress le ${fmtD(today())}_`;
-    return t;
-  }, [data, range, shoes, shoeKm]);
-
-  const handleCopy = async () => {
-    await copyText(summary);
-    setCopied(true); setTimeout(() => setCopied(false), 2500);
-  };
+  const hasData = current.length > 0;
+  const overallDelta = curProfile.overall - prevProfile.overall;
 
   return <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
     <Card>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 8 }}>
         <div>
-          <div style={{ fontWeight: 800, fontSize: 17 }}>📋 Résumé pour le Coach</div>
-          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>Colle ce rapport dans "Programme marathon et calisthénie personnalisé"</div>
+          <div style={{ fontWeight: 800, fontSize: 17 }}>🎯 Profil athlète</div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 3 }}>Ton évolution sur 6 axes, calculée depuis tes séances</div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          {[7, 14, 30].map(d => <Btn key={d} v={range === d ? "primary" : "ghost"} onClick={() => setRange(d)}>{d}j</Btn>)}
+          {[{ d: 14, l: "2 sem" }, { d: 28, l: "4 sem" }, { d: 56, l: "8 sem" }].map(o =>
+            <Btn key={o.d} v={range === o.d ? "primary" : "ghost"} onClick={() => setRange(o.d)}>{o.l}</Btn>)}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <Stat label="Séances" value={data.w.length} unit="" color={C.accent} icon="🎯" />
-        <Stat label="Km running" value={data.w.filter(w => w.discipline === "Course").reduce((s, w) => s + (parseFloat(w.distance) || 0), 0).toFixed(1)} unit="km" color={C.blue} icon="🏃" />
-        <Stat label="Jours nutrition" value={data.n.length} unit="" color={C.green} icon="🥗" />
-      </div>
-      <Btn onClick={handleCopy} v={copied ? "success" : "primary"} style={{ width: "100%", padding: "14px 20px", fontSize: 15, justifyContent: "center" }}>
-        {copied ? "✅ Copié ! Colle dans la conversation Coach →" : "📋 Copier le résumé complet"}
-      </Btn>
     </Card>
-    <Card title="Aperçu du résumé">
-      <div style={{ background: C.bg, borderRadius: 10, padding: 16, fontFamily: mono, fontSize: 11, lineHeight: 1.7, color: C.textDim, whiteSpace: "pre-wrap", maxHeight: 450, overflowY: "auto" }}>{summary}</div>
-    </Card>
+
+    {!hasData ? (
+      <Card style={{ textAlign: "center", padding: 40 }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>🎯</div>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Pas encore de données sur cette période</div>
+        <div style={{ color: C.textMuted, maxWidth: 420, margin: "0 auto", fontSize: 13 }}>
+          Enregistre des séances avec distance, allure et FC pour voir ton profil se dessiner. Plus la saisie est complète, plus les axes sont précis.
+        </div>
+      </Card>
+    ) : <>
+      {/* OVERALL */}
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 24, flexWrap: "wrap" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 4 }}>NOTE GLOBALE</div>
+            <div style={{ fontSize: 56, fontWeight: 800, color: C.accent, fontFamily: mono, lineHeight: 1 }}>{curProfile.overall}</div>
+          </div>
+          {compare && previous.length > 0 && <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 4 }}>ÉVOLUTION</div>
+            <div style={{ fontSize: 28, fontWeight: 800, fontFamily: mono, color: overallDelta > 0 ? C.green : overallDelta < 0 ? C.red : C.textMuted }}>
+              {overallDelta > 0 ? "▲" : overallDelta < 0 ? "▼" : "="} {overallDelta > 0 ? "+" : ""}{overallDelta}
+            </div>
+            <div style={{ fontSize: 10, color: C.textMuted }}>vs période précédente</div>
+          </div>}
+        </div>
+      </Card>
+
+      {/* RADAR */}
+      <Card title="Radar de performance" action={
+        previous.length > 0 ? <Btn v={compare ? "primary" : "ghost"} onClick={() => setCompare(!compare)} style={{ padding: "6px 12px", fontSize: 12 }}>
+          {compare ? "Comparaison ON" : "Comparaison OFF"}
+        </Btn> : null
+      }>
+        <ResponsiveContainer width="100%" height={340}>
+          <RadarChart data={radarData} outerRadius="72%">
+            <PolarGrid stroke={C.border} />
+            <PolarAngleAxis dataKey="axis" tick={{ fill: C.textDim, fontSize: 12, fontWeight: 600 }} />
+            <PolarRadiusAxis domain={[0, 100]} tick={{ fill: C.textMuted, fontSize: 9 }} axisLine={false} />
+            {compare && previous.length > 0 && <Radar name="Période précédente" dataKey="precedent" stroke={C.textMuted} fill={C.textMuted} fillOpacity={0.15} strokeWidth={1.5} />}
+            <Radar name="Période actuelle" dataKey="actuel" stroke={C.accent} fill={C.accent} fillOpacity={0.35} strokeWidth={2} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Tooltip contentStyle={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, fontSize: 12 }} />
+          </RadarChart>
+        </ResponsiveContainer>
+      </Card>
+
+      {/* DÉTAIL DES AXES */}
+      <Card title="Détail des axes" sub="Comment chaque score est calculé — pour que rien ne soit une boîte noire">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {curProfile.axes.map((a, i) => {
+            const prev = prevProfile.axes[i].value;
+            const delta = a.value - prev;
+            return <div key={a.axis} style={{ padding: "12px 14px", background: C.bg, borderRadius: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontWeight: 700, fontSize: 14 }}>{a.axis}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {compare && previous.length > 0 && delta !== 0 && <span style={{ fontSize: 12, fontWeight: 700, fontFamily: mono, color: delta > 0 ? C.green : C.red }}>
+                    {delta > 0 ? "+" : ""}{delta}
+                  </span>}
+                  <span style={{ fontSize: 18, fontWeight: 800, fontFamily: mono, color: C.accent }}>{a.value}</span>
+                  <span style={{ fontSize: 11, color: C.textMuted }}>/100</span>
+                </div>
+              </div>
+              <div style={{ height: 6, background: C.border, borderRadius: 3, overflow: "hidden", marginBottom: 6 }}>
+                <div style={{ width: `${a.value}%`, height: "100%", background: C.accent, borderRadius: 3, transition: "width .4s" }} />
+              </div>
+              <div style={{ fontSize: 11, color: C.textMuted }}>{a.detail}</div>
+            </div>;
+          })}
+        </div>
+      </Card>
+
+      <Card title="📖 Comment lire ce profil">
+        <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.7 }}>
+          <div style={{ marginBottom: 6 }}><b style={{ color: C.text }}>Endurance, Allure, VO2max</b> utilisent des barèmes fixes orientés marathon (ex. sortie de 32 km = 100).</div>
+          <div style={{ marginBottom: 6 }}><b style={{ color: C.text }}>Efficacité cardio & Force</b> sont relatifs à toi : 100 = ton meilleur niveau atteint.</div>
+          <div><b style={{ color: C.text }}>Fraîcheur</b> reflète ta fatigue déclarée inversée : élevée = tu es frais et bien récupéré.</div>
+        </div>
+      </Card>
+    </>}
   </div>;
 }
 
